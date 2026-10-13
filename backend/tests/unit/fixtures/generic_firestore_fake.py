@@ -6,7 +6,7 @@ a flat ``{path: data}`` store, so query-shape bugs (wrong operator, wrong
 field, wrong window) show up as wrong test results instead of passing
 trivially. It supports the same recursive
 ``collection(...).document(...).collection(...)`` chaining production code
-uses, and ``create()``/``set(merge=...)``/``delete()`` so the same store can
+uses, and ``create()``/``set(merge=...)``/``update()``/``delete()`` so the same store can
 back ``utils.experiments`` and ``utils.email.lifecycle`` calls in the same
 test.
 
@@ -19,10 +19,12 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, Optional
 
+from google.api_core.exceptions import NotFound
+
 
 class FakeSnapshot:
-    def __init__(self, path: str, data: Optional[Dict[str, Any]]):
-        self.reference = FakeDocumentReference(path, None)
+    def __init__(self, path: str, data: Optional[Dict[str, Any]], db: Optional['FakeFirestore'] = None):
+        self.reference = FakeDocumentReference(path, db)
         self.id = path.rsplit('/', 1)[-1]
         self.exists = data is not None
         self._data = copy.deepcopy(data)
@@ -38,7 +40,7 @@ class FakeDocumentReference:
 
     def get(self, transaction=None, field_paths=None) -> FakeSnapshot:
         assert self._db is not None
-        return FakeSnapshot(self.path, self._db.docs.get(self.path))
+        return FakeSnapshot(self.path, self._db.docs.get(self.path), self._db)
 
     def collection(self, name: str) -> 'FakeQuery':
         assert self._db is not None
@@ -55,6 +57,12 @@ class FakeDocumentReference:
         if self.path in self._db.docs:
             raise RuntimeError(f'fake firestore: document already exists at {self.path}')
         self._db.docs[self.path] = dict(value)
+
+    def update(self, value: Dict[str, Any]) -> None:
+        assert self._db is not None
+        if self.path not in self._db.docs:
+            raise NotFound(self.path)
+        self._db.docs[self.path].update(copy.deepcopy(value))
 
     def delete(self) -> None:
         assert self._db is not None
@@ -109,7 +117,7 @@ class FakeQuery:
             if '/' in remainder:
                 continue  # belongs to a deeper subcollection, not this one
             if all(self._matches(data, field, operation, value) for field, operation, value in self._filters):
-                matches.append(FakeSnapshot(path, data))
+                matches.append(FakeSnapshot(path, data, self._db))
         matches.sort(key=lambda snap: (snap.to_dict() or {}).get(self._order_field) if self._order_field else snap.id)
         return matches[: self._limit_count] if self._limit_count is not None else matches
 
