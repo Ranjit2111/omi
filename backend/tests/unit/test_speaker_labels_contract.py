@@ -281,7 +281,13 @@ def test_reject_route_accepts_speaker_id_zero(client, monkeypatch):
     ('error', 'status_code', 'detail'),
     [
         pytest.param(
-            LookupError(f'Conversation not found: {LEAK}'), 404, 'Conversation or speaker not found', id='lookup-404'
+            LookupError(f'Conversation not found: {LEAK}'),
+            404,
+            'Conversation, speaker or person not found',
+            id='lookup-404',
+        ),
+        pytest.param(
+            LookupError(f'Person not found: {LEAK}'), 404, 'Conversation, speaker or person not found', id='person-404'
         ),
         pytest.param(
             PermissionError(f'Conversation is locked: {LEAK}'),

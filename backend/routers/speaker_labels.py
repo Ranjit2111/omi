@@ -54,7 +54,7 @@ def reject_speaker_label(
         )
     except LookupError as error:
         logger.warning(f'reject_speaker_label target not found uid={uid}: {sanitize(error)}')
-        raise HTTPException(status_code=404, detail='Conversation or speaker not found') from error
+        raise HTTPException(status_code=404, detail='Conversation, speaker or person not found') from error
     except PermissionError as error:
         raise HTTPException(status_code=402, detail='A paid plan is required to access this conversation.') from error
     except ValueError as error:
