@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -7,11 +8,21 @@ from database import voice_profiles as voice_profiles_db
 from models.conversation import Conversation
 from models.speaker_labels import RejectSpeakerRequest, VoiceMatchesResponse
 from utils.conversations.factory import deserialize_conversation
+from utils.log_sanitizer import sanitize
 from utils.other import endpoints as auth
 from utils.other.storage import delete_speech_profile_blob
 from utils.speaker_voice_matches import find_person_voice_matches
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+_REJECT_FAILED_DETAIL = 'Unable to process speaker rejection'
+
+
+def _internal_error(operation: str, uid: str, error: Exception, detail: str) -> HTTPException:
+    logger.error(f'{operation} failed uid={uid}: {type(error).__name__}: {sanitize(error)}')
+    return HTTPException(status_code=500, detail=detail)
 
 
 @router.post(
@@ -26,6 +37,10 @@ def reject_speaker_label(
     background_tasks: BackgroundTasks,
     uid: str = Depends(auth.get_current_user_uid),
 ):
+    if not conversation_id.strip():
+        raise HTTPException(status_code=400, detail='conversation_id must not be blank')
+    if speaker_id < 0:
+        raise HTTPException(status_code=400, detail='speaker_id must not be negative')
     try:
         raw, resolved, removed, _before = conversations_db.assign_conversation_speaker(
             uid,
@@ -38,26 +53,33 @@ def reject_speaker_label(
             rejection={'kind': data.kind, 'person_id': data.person_id},
         )
     except LookupError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        logger.warning(f'reject_speaker_label target not found uid={uid}: {sanitize(error)}')
+        raise HTTPException(status_code=404, detail='Conversation or speaker not found') from error
     except PermissionError as error:
         raise HTTPException(status_code=402, detail='A paid plan is required to access this conversation.') from error
     except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    if data.kind == 'not_a_person':
-        resolved_ids = set(resolved)
-        affected = {
-            int(segment['speaker_id'])
-            for segment in raw.get('transcript_segments') or []
-            if segment.get('id') in resolved_ids and isinstance(segment.get('speaker_id'), int)
-        } or {speaker_id}
-        generation = (raw.get('manual_speaker_assignments') or {}).get('generation')
-        for affected_speaker in sorted(affected):
-            voice_profiles_db.record_ignored_voice(
-                uid, raw['id'], affected_speaker, datetime.now(timezone.utc), assignment_generation=generation
-            )
-    for path in removed:
-        background_tasks.add_task(delete_speech_profile_blob, path)
-    return deserialize_conversation(raw)
+        logger.warning(f'reject_speaker_label request rejected uid={uid}: {sanitize(error)}')
+        raise HTTPException(status_code=409, detail='Invalid speaker rejection request') from error
+    except Exception as error:
+        raise _internal_error('reject_speaker_label', uid, error, _REJECT_FAILED_DETAIL) from error
+    try:
+        if data.kind == 'not_a_person':
+            resolved_ids = set(resolved)
+            affected = {
+                int(segment['speaker_id'])
+                for segment in raw.get('transcript_segments') or []
+                if segment.get('id') in resolved_ids and isinstance(segment.get('speaker_id'), int)
+            } or {speaker_id}
+            generation = (raw.get('manual_speaker_assignments') or {}).get('generation')
+            for affected_speaker in sorted(affected):
+                voice_profiles_db.record_ignored_voice(
+                    uid, raw['id'], affected_speaker, datetime.now(timezone.utc), assignment_generation=generation
+                )
+        for path in removed:
+            background_tasks.add_task(delete_speech_profile_blob, path)
+        return deserialize_conversation(raw)
+    except Exception as error:
+        raise _internal_error('reject_speaker_label post-processing', uid, error, _REJECT_FAILED_DETAIL) from error
 
 
 @router.get('/v1/users/people/{person_id}/voice-matches', response_model=VoiceMatchesResponse, tags=['v1'])

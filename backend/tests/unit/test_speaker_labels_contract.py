@@ -4,11 +4,13 @@ C1: ``TranscriptSegment.speaker_label_source`` — optional literal, default Non
 C2: ``Person`` voice-learning fields — flat, defaulted for legacy records.
 C4: ``RejectSpeakerRequest`` + POST reject route — body validation, durable ledger.
 C5: ``VoiceMatch``/``VoiceMatchesResponse`` + GET voice-matches route — cached matches.
+Error boundaries: bounded 400/404/409/500 details, id validation and sanitized logs on both routes.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -232,3 +234,105 @@ def test_generated_dart_wire_models_cover_contract():
     assert 'voiceLearningState' in people_dart
     assert 'class GeneratedVoiceMatch' in people_dart
     assert 'class GeneratedVoiceMatchesResponse' in people_dart
+
+
+LEAK = 'INTERNAL_LEAK_collection_users_documents_7f3a9c21'
+REJECT_URL = '/v1/conversations/conv1/speakers/3/reject'
+VOICE_MATCHES_URL = '/v1/users/people/p1/voice-matches'
+REJECT_FAILED_DETAIL = 'Unable to process speaker rejection'
+
+
+def _failing_assign(error: Exception):
+    def assign(*args, **kwargs):
+        raise error
+
+    return assign
+
+
+@pytest.mark.parametrize(
+    ('url', 'detail'),
+    [
+        pytest.param(
+            '/v1/conversations/%20/speakers/3/reject', 'conversation_id must not be blank', id='blank-conversation-id'
+        ),
+        pytest.param(
+            '/v1/conversations/conv1/speakers/-1/reject', 'speaker_id must not be negative', id='negative-speaker-id'
+        ),
+    ],
+)
+def test_reject_route_rejects_invalid_ids_before_touching_the_database(client, monkeypatch, url, detail):
+    assign_calls = []
+    monkeypatch.setattr(
+        conversations_db, 'assign_conversation_speaker', lambda *args, **kwargs: assign_calls.append(args)
+    )
+    response = client.post(url, json={'kind': 'not_me'})
+    assert response.status_code == 400
+    assert response.json() == {'detail': detail}
+    assert assign_calls == []
+
+
+def test_reject_route_accepts_speaker_id_zero(client, monkeypatch):
+    monkeypatch.setattr(conversations_db, 'assign_conversation_speaker', _failing_assign(LookupError('missing')))
+    response = client.post('/v1/conversations/conv1/speakers/0/reject', json={'kind': 'not_me'})
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ('error', 'status_code', 'detail'),
+    [
+        pytest.param(
+            LookupError(f'Conversation not found: {LEAK}'), 404, 'Conversation or speaker not found', id='lookup-404'
+        ),
+        pytest.param(
+            PermissionError(f'Conversation is locked: {LEAK}'),
+            402,
+            'A paid plan is required to access this conversation.',
+            id='permission-402',
+        ),
+        pytest.param(
+            ValueError(f'undecodable transcript_segments: {LEAK}'),
+            409,
+            'Invalid speaker rejection request',
+            id='value-409',
+        ),
+        pytest.param(RuntimeError(f'firestore credentials {LEAK}'), 500, REJECT_FAILED_DETAIL, id='unexpected-500'),
+    ],
+)
+def test_reject_route_maps_errors_to_bounded_responses(client, monkeypatch, error, status_code, detail):
+    monkeypatch.setattr(conversations_db, 'assign_conversation_speaker', _failing_assign(error))
+    response = client.post(REJECT_URL, json={'kind': 'not_me'})
+    assert response.status_code == status_code
+    assert response.json() == {'detail': detail}
+    assert LEAK not in response.text
+
+
+def test_reject_route_masks_post_processing_failure(client, monkeypatch):
+    raw = {'id': 'conv1', 'transcript_segments': [{'id': 's1', 'speaker_id': 3}]}
+    monkeypatch.setattr(conversations_db, 'assign_conversation_speaker', lambda *args, **kwargs: (raw, ['s1'], [], {}))
+
+    def record_ignored_voice(*args, **kwargs):
+        raise RuntimeError(f'ignored voice write failed: {LEAK}')
+
+    monkeypatch.setattr(speaker_labels_router.voice_profiles_db, 'record_ignored_voice', record_ignored_voice)
+    response = client.post(REJECT_URL, json={'kind': 'not_a_person'})
+    assert response.status_code == 500
+    assert response.json() == {'detail': REJECT_FAILED_DETAIL}
+    assert LEAK not in response.text
+
+
+@pytest.mark.parametrize(
+    'error',
+    [
+        pytest.param(LookupError(f'Conversation not found: {LEAK}'), id='lookup'),
+        pytest.param(ValueError(f'undecodable transcript_segments: {LEAK}'), id='value'),
+        pytest.param(RuntimeError(f'firestore credentials {LEAK}'), id='unexpected'),
+    ],
+)
+def test_reject_route_logs_failures_without_raw_error_text(client, monkeypatch, caplog, error):
+    monkeypatch.setattr(conversations_db, 'assign_conversation_speaker', _failing_assign(error))
+    with caplog.at_level(logging.WARNING):
+        client.post(REJECT_URL, json={'kind': 'not_me'})
+    router_records = [record for record in caplog.records if record.name == speaker_labels_router.logger.name]
+    assert len(router_records) == 1
+    assert UID in router_records[0].getMessage()
+    assert LEAK not in caplog.text
