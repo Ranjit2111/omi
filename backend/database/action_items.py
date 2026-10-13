@@ -976,6 +976,9 @@ def update_action_item(
     """
     # Prepare data
     update_data = _prepare_action_item_for_write(update_data, partial=True)
+    # sync_requested is also the pending-push marker that _apple_linked reads, so only an Apple export settles it.
+    if update_data.get('exported') is True and update_data.get('export_platform') == 'apple_reminders':
+        update_data['sync_requested'] = False
 
     user_ref = db.collection('users').document(uid)
     action_item_ref = user_ref.collection(action_items_collection).document(action_item_id)
@@ -1337,6 +1340,8 @@ def get_pending_apple_reminders_sync(uid: str) -> Dict[str, Any]:
     Get items needing Apple Reminders sync:
     - pending_export: sync_requested=True but not yet exported (FCM missed items)
     - synced_items: exported to apple_reminders with apple_reminder_id (for bidirectional sync)
+
+    Exported rows still flagged sync_requested are settled as they are met, so they stop filling the 50-row page.
     """
     user_ref = db.collection('users').document(uid)
     items_ref = user_ref.collection(action_items_collection)
@@ -1349,6 +1354,11 @@ def get_pending_apple_reminders_sync(uid: str) -> Dict[str, Any]:
     for doc in pending_docs:
         data: Dict[str, Any] = typed_doc(doc)
         if data.get('exported') is True:
+            # updated_at stays untouched: Apple sync is last-writer-wins on it.
+            try:
+                doc.reference.update({'sync_requested': False})
+            except NotFound:
+                pass
             continue
         data['id'] = doc.id
         pending_export.append(prepare_action_item_for_read(data))
