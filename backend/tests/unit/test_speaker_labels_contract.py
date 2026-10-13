@@ -388,3 +388,39 @@ def test_voice_matches_route_logs_unexpected_failure_without_raw_error_text(clie
     assert len(router_records) == 1
     assert 'RuntimeError' in router_records[0].getMessage()
     assert LEAK not in caplog.text
+
+
+PRIVATE_WORD = 'confidential'
+
+
+def _transcript_validation_error() -> ValidationError:
+    with pytest.raises(ValidationError) as caught:
+        TranscriptSegment(text=f'{PRIVATE_WORD} diagnosis notes', is_user=False, start=0.0)
+    return caught.value
+
+
+def test_reject_route_logs_validation_error_without_input_values(client, monkeypatch, caplog):
+    monkeypatch.setattr(
+        conversations_db, 'assign_conversation_speaker', _failing_assign(_transcript_validation_error())
+    )
+    with caplog.at_level(logging.WARNING):
+        response = client.post(REJECT_URL, json={'kind': 'not_me'})
+    assert response.status_code == 409
+    router_records = [record for record in caplog.records if record.name == speaker_labels_router.logger.name]
+    assert len(router_records) == 1
+    assert PRIVATE_WORD not in caplog.text
+
+
+def test_voice_matches_route_logs_validation_error_without_input_values(client, monkeypatch, caplog):
+    error = _transcript_validation_error()
+
+    async def find_person_voice_matches(uid, person_id):
+        raise error
+
+    monkeypatch.setattr(speaker_labels_router, 'find_person_voice_matches', find_person_voice_matches)
+    with caplog.at_level(logging.ERROR):
+        response = client.get(VOICE_MATCHES_URL)
+    assert response.status_code == 500
+    router_records = [record for record in caplog.records if record.name == speaker_labels_router.logger.name]
+    assert len(router_records) == 1
+    assert PRIVATE_WORD not in caplog.text

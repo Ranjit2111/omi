@@ -2,13 +2,14 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import ValidationError
 
 from database import conversations as conversations_db
 from database import voice_profiles as voice_profiles_db
 from models.conversation import Conversation
 from models.speaker_labels import RejectSpeakerRequest, VoiceMatchesResponse
 from utils.conversations.factory import deserialize_conversation
-from utils.log_sanitizer import sanitize
+from utils.log_sanitizer import sanitize, sanitize_validation_error
 from utils.other import endpoints as auth
 from utils.other.storage import delete_speech_profile_blob
 from utils.speaker_voice_matches import find_person_voice_matches
@@ -20,8 +21,12 @@ router = APIRouter()
 _REJECT_FAILED_DETAIL = 'Unable to process speaker rejection'
 
 
+def _log_text(error: Exception) -> str:
+    return sanitize_validation_error(error) if isinstance(error, ValidationError) else sanitize(error)
+
+
 def _internal_error(operation: str, uid: str, error: Exception, detail: str) -> HTTPException:
-    logger.error(f'{operation} failed uid={uid}: {type(error).__name__}: {sanitize(error)}')
+    logger.error(f'{operation} failed uid={uid}: {type(error).__name__}: {_log_text(error)}')
     return HTTPException(status_code=500, detail=detail)
 
 
@@ -53,12 +58,12 @@ def reject_speaker_label(
             rejection={'kind': data.kind, 'person_id': data.person_id},
         )
     except LookupError as error:
-        logger.warning(f'reject_speaker_label target not found uid={uid}: {sanitize(error)}')
+        logger.warning(f'reject_speaker_label target not found uid={uid}: {_log_text(error)}')
         raise HTTPException(status_code=404, detail='Conversation, speaker or person not found') from error
     except PermissionError as error:
         raise HTTPException(status_code=402, detail='A paid plan is required to access this conversation.') from error
     except ValueError as error:
-        logger.warning(f'reject_speaker_label request rejected uid={uid}: {sanitize(error)}')
+        logger.warning(f'reject_speaker_label request rejected uid={uid}: {_log_text(error)}')
         raise HTTPException(status_code=409, detail='Invalid speaker rejection request') from error
     except Exception as error:
         raise _internal_error('reject_speaker_label', uid, error, _REJECT_FAILED_DETAIL) from error
