@@ -84,7 +84,11 @@ def reject_speaker_label(
 
 @router.get('/v1/users/people/{person_id}/voice-matches', response_model=VoiceMatchesResponse, tags=['v1'])
 async def get_person_voice_matches(person_id: str, uid: str = Depends(auth.get_current_user_uid)):
+    if not person_id.strip():
+        raise HTTPException(status_code=400, detail='person_id must not be blank')
     try:
         return await find_person_voice_matches(uid, person_id)
     except LookupError as error:
         raise HTTPException(status_code=404, detail='Person not found') from error
+    except Exception as error:
+        raise _internal_error('get_person_voice_matches', uid, error, 'Unable to load voice matches') from error

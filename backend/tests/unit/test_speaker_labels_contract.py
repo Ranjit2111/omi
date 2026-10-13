@@ -336,3 +336,49 @@ def test_reject_route_logs_failures_without_raw_error_text(client, monkeypatch, 
     assert len(router_records) == 1
     assert UID in router_records[0].getMessage()
     assert LEAK not in caplog.text
+
+
+def test_voice_matches_route_rejects_blank_person_id_before_lookup(client, monkeypatch):
+    lookups = []
+
+    async def find_person_voice_matches(uid, person_id):
+        lookups.append(person_id)
+
+    monkeypatch.setattr(speaker_labels_router, 'find_person_voice_matches', find_person_voice_matches)
+    response = client.get('/v1/users/people/%20/voice-matches')
+    assert response.status_code == 400
+    assert response.json() == {'detail': 'person_id must not be blank'}
+    assert lookups == []
+
+
+@pytest.mark.parametrize(
+    ('error', 'status_code', 'detail'),
+    [
+        pytest.param(LookupError(f'Person not found: {LEAK}'), 404, 'Person not found', id='lookup-404'),
+        pytest.param(
+            RuntimeError(f'firestore credentials {LEAK}'), 500, 'Unable to load voice matches', id='unexpected-500'
+        ),
+    ],
+)
+def test_voice_matches_route_maps_errors_to_bounded_responses(client, monkeypatch, error, status_code, detail):
+    async def find_person_voice_matches(uid, person_id):
+        raise error
+
+    monkeypatch.setattr(speaker_labels_router, 'find_person_voice_matches', find_person_voice_matches)
+    response = client.get(VOICE_MATCHES_URL)
+    assert response.status_code == status_code
+    assert response.json() == {'detail': detail}
+    assert LEAK not in response.text
+
+
+def test_voice_matches_route_logs_unexpected_failure_without_raw_error_text(client, monkeypatch, caplog):
+    async def find_person_voice_matches(uid, person_id):
+        raise RuntimeError(f'firestore credentials {LEAK}')
+
+    monkeypatch.setattr(speaker_labels_router, 'find_person_voice_matches', find_person_voice_matches)
+    with caplog.at_level(logging.ERROR):
+        client.get(VOICE_MATCHES_URL)
+    router_records = [record for record in caplog.records if record.name == speaker_labels_router.logger.name]
+    assert len(router_records) == 1
+    assert 'RuntimeError' in router_records[0].getMessage()
+    assert LEAK not in caplog.text
