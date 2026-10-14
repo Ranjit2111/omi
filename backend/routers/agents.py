@@ -1,10 +1,15 @@
+import logging
+
 from fastapi import APIRouter
 from fastapi import Request, HTTPException
 
 from models import shared
 from models import task
 from utils.conversations.process_conversation import process_user_expression_measurement_callback
+from utils.log_sanitizer import sanitize
 from utils.other import hume
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -20,7 +25,11 @@ def hume_expression_measurement_callback(request: Request, data: dict):
     if not isinstance(job_id, str) or not job_id.strip():
         raise HTTPException(status_code=400, detail="Job ID is required")
 
-    process_user_expression_measurement_callback(task.TaskActionProvider.HUME, job_id, job_callback)
+    try:
+        process_user_expression_measurement_callback(task.TaskActionProvider.HUME, job_id, job_callback)
+    except Exception as exc:
+        logger.error(f"Hume callback processing failed: {type(exc).__name__}: {sanitize(exc)}")
+        raise HTTPException(status_code=500, detail="Failed to process Hume callback")
 
     # Empty response
     return {}

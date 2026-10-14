@@ -1,6 +1,7 @@
 """POST /v1/agents/hume/callback rejects a callback with no usable job_id and reports processing faults as a sanitized 500."""
 
 import importlib
+import logging
 import sys
 import types
 from unittest.mock import MagicMock
@@ -61,3 +62,20 @@ def test_callback_without_usable_job_id_is_rejected_before_any_lookup(client, pr
     assert response.status_code == 400
     assert response.json() == {'detail': 'Job ID is required'}
     process_callback.assert_not_called()
+
+
+def test_processing_failure_returns_sanitized_500(client, process_callback, caplog):
+    process_callback.side_effect = RuntimeError('deadline exceeded for token AbCd1234EfGh5678')
+
+    response = client.post('/v1/agents/hume/callback', json={'job_id': 'job-1', 'status': 'COMPLETED'})
+
+    assert response.status_code == 500
+    assert response.json() == {'detail': 'Failed to process Hume callback'}
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert (
+        errors[0].getMessage()
+        == 'Hume callback processing failed: RuntimeError: deadline exceeded for token AbCd***5678'
+    )
+    assert 'AbCd1234EfGh5678' not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
