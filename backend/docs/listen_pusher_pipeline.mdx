@@ -1131,6 +1131,22 @@ This counts purges, including manual-merge source deletion, not user-confirmed
 false merges. Account wipes/raw database deletes bypass this counter. The
 `last_merged_at` stamp and deletion counter remain active when audit I/O is off.
 
+## Manual conversation merge ordering
+
+`POST /v1/conversations/merge` validation and its worker share one source order:
+valid `started_at`; otherwise valid `created_at`; otherwise the minimum UTC
+ordering key. Sources with neither usable timestamp stay first in input order,
+and equal effective timestamps retain input order. The first ordered source
+owns the merged `created_at`; if its own value is missing or invalid, the merged
+row uses the current UTC time.
+
+Fully timed sources keep their existing absolute-origin segment offsets, and
+overlapping transcripts interleave by segment time. A later source without a
+real `started_at` follows the accumulated transcript offset. `created_at`
+orders sources only; it does not become a recording origin or fill gap
+arithmetic. Validation gap warnings still use real `finished_at` and
+`started_at` values.
+
 ## Conversation start location
 
 Mobile clients may send one bounded `X-Omi-Conversation-Geolocation` header on

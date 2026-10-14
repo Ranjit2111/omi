@@ -76,6 +76,10 @@ def _coerce_dt(value):
 _UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _merge_order_key(conversation: Dict) -> datetime:
+    return _coerce_dt(conversation.get("started_at")) or _coerce_dt(conversation.get("created_at")) or _UTC_MIN
+
+
 def _photo_created_at_sort_key(photo: Dict) -> datetime:
     created_at = coerce_utc_datetime(photo.get("created_at"))
     if created_at is None:
@@ -181,8 +185,7 @@ def validate_merge_compatibility(
 
     # Generate warnings for large gaps (but don't reject)
     warnings = []
-    _UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
-    sorted_convs = sorted(conversations, key=lambda c: _coerce_dt(c.get("started_at")) or _UTC_MIN)
+    sorted_convs = sorted(conversations, key=_merge_order_key)
 
     for i in range(1, len(sorted_convs)):
         prev_finished = _coerce_dt(sorted_convs[i - 1].get("finished_at"))
@@ -252,10 +255,7 @@ def perform_merge_async(
         # details and rationale.
         conversations = _normalize_conversation_timestamps(conversations)
 
-        # Sort by started_at (earliest first). _UTC_MIN keeps sort total even
-        # if a doc has no (or an unparseable) started_at.
-        _UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
-        sorted_convs = sorted(conversations, key=lambda c: c.get("started_at") or _UTC_MIN)
+        sorted_convs = sorted(conversations, key=_merge_order_key)
 
         # 2. Merge raw data
         merged_segments = _merge_transcript_segments(sorted_convs)
@@ -427,15 +427,12 @@ def perform_merge_async(
 
 def _merge_transcript_segments(conversations: List[Dict]) -> List[Dict]:
     """
-    Merge transcript segments from all conversations sequentially.
+    Merge transcript segments from conversations ordered by start, then creation time.
 
-    Strategy:
-    - Sort conversations by started_at
-    - Append segments sequentially
-    - Adjust timestamps to account for gaps between conversations
+    Later sources without a real start follow the accumulated transcript offset.
 
     Args:
-        conversations: List of conversation dictionaries (already sorted by started_at)
+        conversations: Conversation dictionaries in chronological source order.
 
     Returns:
         List of merged transcript segment dictionaries
@@ -585,7 +582,8 @@ def _copy_audio_chunks_for_merge(
 
     Args:
         uid: User ID
-        conversations: List of conversation dictionaries (sorted by started_at)
+        conversations: Conversation dictionaries in chronological source order,
+            using creation time when a valid start is unavailable.
         new_conversation_id: ID for the new merged conversation
 
     Returns:
