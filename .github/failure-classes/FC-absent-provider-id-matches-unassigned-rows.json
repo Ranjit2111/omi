@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "FC-absent-provider-id-matches-unassigned-rows",
+  "violated_contract": "A webhook that correlates a provider callback to our own record by the provider's job id must reject a callback that carries no usable id before it queries. The Firestore client encodes `field == None` as an IS_NULL filter instead of refusing it, so an absent id silently matches every record still waiting for its provider id -- rows created before the provider job started, or whose submission failed -- and the unauthenticated payload then drives that unrelated record's status and stored results.",
+  "canonical_prevention": "Validate the correlation id at the route (a non-blank string) and answer 4xx before any lookup; never pass an optional id into an equality filter. A hermetic route test posts the id missing, null, empty, blank and non-string, and asserts a 400 and that the processing function is never called.",
+  "canonical_prevention_artifact": [
+    "backend/routers/agents.py",
+    "backend/tests/unit/test_agents_router.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "backend/routers/agents.py"
+  ],
+  "status": "open"
+}
