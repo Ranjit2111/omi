@@ -9,8 +9,9 @@ request → router → database → response cycle.
 """
 
 import json
+from datetime import datetime, timezone
 
-from fakes.firestore import seed_conversation
+from fakes.firestore import get_mock_firestore, seed_conversation
 
 
 class TestConversationCRUD:
@@ -86,6 +87,98 @@ class TestConversationCRUD:
 
         resp = client.get(f"/v1/conversations/{conv_id}", headers=auth_headers)
         assert resp.status_code == 404
+
+    def test_manual_merge_orders_startless_source_by_created_at(
+        self, client, auth_headers, sample_conversation_data, test_uid
+    ):
+        morning_id = "manual-merge-morning"
+        noon_id = "manual-merge-noon"
+        morning = dict(
+            sample_conversation_data,
+            id=morning_id,
+            created_at="2026-05-30T10:00:00Z",
+            started_at="2026-05-30T10:00:00Z",
+            finished_at="2026-05-30T10:00:05Z",
+            transcript_segments=[
+                {
+                    "id": "manual-merge-morning-segment",
+                    "text": "Morning transcript",
+                    "speaker": "SPEAKER_00",
+                    "is_user": True,
+                    "start": 0.0,
+                    "end": 5.0,
+                }
+            ],
+            status="completed",
+            is_locked=False,
+        )
+        noon = dict(
+            sample_conversation_data,
+            id=noon_id,
+            created_at="2026-05-30T12:00:00Z",
+            transcript_segments=[
+                {
+                    "id": "manual-merge-noon-segment",
+                    "text": "Noon transcript",
+                    "speaker": "SPEAKER_00",
+                    "is_user": True,
+                    "start": 0.0,
+                    "end": 5.0,
+                }
+            ],
+            status="completed",
+            is_locked=False,
+        )
+        noon.pop("started_at")
+        noon.pop("finished_at")
+        seed_conversation(test_uid, morning)
+        seed_conversation(test_uid, noon)
+
+        response = client.post(
+            "/v1/conversations/merge",
+            json={"conversation_ids": [noon_id, morning_id], "reprocess": False},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "merging"
+        assert response.json()["conversation_ids"] == [noon_id, morning_id]
+
+        conversation_docs = (
+            get_mock_firestore().collection("users").document(test_uid).collection("conversations").stream()
+        )
+        merged_ids = {document.id for document in conversation_docs} - {noon_id, morning_id}
+        assert len(merged_ids) == 1
+        merged_id = merged_ids.pop()
+
+        merged_response = client.get(f"/v1/conversations/{merged_id}", headers=auth_headers)
+        assert merged_response.status_code == 200, merged_response.text
+        merged = merged_response.json()
+        assert merged["status"] == "completed"
+        assert datetime.fromisoformat(merged["created_at"]) == datetime(2026, 5, 30, 10, 0, tzinfo=timezone.utc)
+        assert [segment["text"] for segment in merged["transcript_segments"]] == [
+            "Morning transcript",
+            "Noon transcript",
+        ]
+        assert [(segment["start"], segment["end"]) for segment in merged["transcript_segments"]] == [
+            (0.0, 5.0),
+            (5.0, 10.0),
+        ]
+
+        metadata = merged["external_data"]["merge_metadata"]
+        assert metadata["source_conversation_ids"] == [noon_id, morning_id]
+        assert metadata["source_details"] == [
+            {
+                "id": morning_id,
+                "started_at": "2026-05-30T10:00:00+00:00",
+                "finished_at": "2026-05-30T10:00:05+00:00",
+                "source": "omi",
+            },
+            {"id": noon_id, "started_at": None, "finished_at": None, "source": "omi"},
+        ]
+
+        for source_id in (noon_id, morning_id):
+            source_response = client.get(f"/v1/conversations/{source_id}", headers=auth_headers)
+            assert source_response.status_code == 404
 
 
 class TestActionItemCRUD:
