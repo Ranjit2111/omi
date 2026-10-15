@@ -131,7 +131,8 @@ def merge_harness():
 
     storage_module = ModuleType("utils.other.storage")
     storage_module.compute_audio_files_fingerprint = lambda *_args: "fingerprint"
-    storage_module.delete_conversation_audio_files = lambda _uid, conversation_id: state["events"].append(
+    # merged_into kwarg (upstream #21544) is not relevant to ordering assertions.
+    storage_module.delete_conversation_audio_files = lambda _uid, conversation_id, **_kwargs: state["events"].append(
         ("audio_deleted", conversation_id)
     )
     storage_module.enqueue_conversation_artifact_build = lambda *_args, **_kwargs: None
