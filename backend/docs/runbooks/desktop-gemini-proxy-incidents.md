@@ -85,6 +85,6 @@ Create log-based counters from the terminal event and scope every policy to serv
 
 ## Mitigation and rollback
 
-The bounded contract is one provider dispatch, a 75-second non-stream logical deadline, 10-second connect, 15-second write, 70-second read, 5-second pool wait, and 30-second streaming idle-gap timeout. Do not lengthen these values based only on temporal correlation. Clients must not replay local timeouts, HTTP 504s, ambiguous transport failures, or responses marked `X-Omi-Retryable: false`.
+The bounded contract is one provider dispatch, a 75-second non-stream logical deadline, 10-second connect, 15-second write, 70-second read, 5-second pool wait, a 30-second streaming idle-gap timeout, and a 270-second streaming wall clock. The wall clock is what keeps a trickled SSE body from running into desktop-backend's 300-second Cloud Run request timeout. Do not lengthen these values based only on temporal correlation. Clients must not replay local timeouts, HTTP 504s, ambiguous transport failures, or responses marked `X-Omi-Retryable: false`.
 
 If a new Python revision regresses, move traffic back to the previously verified image digest using the normal production workflow. Do not rebuild an old SHA and call it a rollback. Preserve the failed revision's logs and candidate evidence. A code revert is separate from traffic movement; this runbook does not authorize deployment or production configuration changes.
